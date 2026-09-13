@@ -1,0 +1,183 @@
+:root {
+  /* Color tokens -- Comic Pop palette: punchy red/blue/yellow on a warm
+     cream ground, ink-black text and outlines. */
+  --paper: #fff7ec;
+  --paper-line: #f0e2c8;
+  --ink: #1a1a1a;
+  --ink-soft: #55524c;
+  --ink-faint: #8a8578;
+  --forest: #1d7fe0;
+  --forest-dim: #dcedff;
+  --gold: #c97a00;
+  --gold-dim: #fff0bf;
+  --coral: #e63946;
+  --coral-dim: #fbd9da;
+  --card: #ffffff;
+  --border: #1a1a1a;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+
+  /* Bold poster-style display face for a comic-lettering feel, paired
+     with a clean sans body -- both from safe, widely-available system
+     fonts (no external font fetch, see earlier notes on why). */
+  --font-display: "Arial Black", "Helvetica Neue", Impact, -apple-system,
+    sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+}
+
+body {
+  color: var(--ink);
+  font-family: var(--font-body);
+  background-color: var(--paper);
+  /* Halftone dot texture, the classic comic-print ground. */
+  background-image: radial-gradient(var(--paper-line) 1.4px, transparent 1.4px);
+  background-size: 15px 15px;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+}
+
+button {
+  font-family: inherit;
+  transition: transform 120ms ease;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.pop-in {
+  animation: pop-in 260ms ease both;
+}
+
+::selection {
+  background: var(--gold-dim);
+}
+
+/* Visible keyboard focus for accessibility */
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid var(--forest);
+  outline-offset: 2px;
+}
+
+/* Reusable comic-panel / comic-button treatment: thick ink border plus
+   a hard offset drop-shadow (no blur), the signature comic-book look.
+   Applied via className alongside each component's inline styles. */
+.comic-panel {
+  border: 3px solid var(--ink) !important;
+  box-shadow: 6px 6px 0 var(--ink);
+}
+
+.comic-btn {
+  border: 3px solid var(--ink) !important;
+  box-shadow: 4px 4px 0 var(--ink);
+}
+
+.comic-btn:active:not(:disabled) {
+  box-shadow: 1px 1px 0 var(--ink);
+  transform: translate(3px, 3px) scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   Accessibility overrides for special-needs / accessibility settings.
+   These are opt-in classes toggled on <body> from pages/index.tsx based
+   on the "Accessibility options" the person turns on. Because colors
+   throughout the app are consumed via var(--token) in component inline
+   styles, redefining the tokens here at the body level cascades into
+   every component automatically -- no component code needs to know
+   high-contrast mode exists.
+--------------------------------------------------------------------- */
+
+/* High contrast: stronger text/background contrast (targets WCAG AA/AAA)
+   and heavier borders so shapes read clearly for low-vision users. */
+body.a11y-high-contrast {
+  --paper: #ffffff;
+  --paper-line: #d0d0d0;
+  --ink: #000000;
+  --ink-soft: #1a1a1a;
+  --ink-faint: #4d4d4d;
+  --forest: #0047ab;
+  --forest-dim: #d9e6fb;
+  --gold: #7a4a00;
+  --gold-dim: #ffe9b8;
+  --coral: #8a0000;
+  --coral-dim: #ffdcdc;
+  --card: #ffffff;
+  --border: #000000;
+}
+
+body.a11y-high-contrast * {
+  background-image: none !important;
+}
+
+/* Reduce motion: an explicit in-app override, independent of the OS-level
+   prefers-reduced-motion setting above, for people who want it off inside
+   this app specifically without changing system-wide settings. */
+body.a11y-reduce-motion *,
+body.a11y-reduce-motion *::before,
+body.a11y-reduce-motion *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* Dyslexia-friendly spacing: wider letter/word/line spacing is a
+   commonly recommended readability accommodation. Applied broadly since
+   spacing (unlike font-size) cascades cleanly without needing every
+   component to opt in. */
+body.a11y-dyslexia-friendly {
+  letter-spacing: 0.02em;
+  word-spacing: 0.12em;
+}
+
+body.a11y-dyslexia-friendly p,
+body.a11y-dyslexia-friendly h1,
+body.a11y-dyslexia-friendly h2,
+body.a11y-dyslexia-friendly h3 {
+  line-height: 1.7 !important;
+}
+
+/* Stronger, higher-contrast focus ring, useful for keyboard users and
+   compounds well with high-contrast mode. */
+body.a11y-high-contrast button:focus-visible,
+body.a11y-high-contrast a:focus-visible,
+body.a11y-high-contrast textarea:focus-visible,
+body.a11y-high-contrast input:focus-visible {
+  outline: 3px solid #000000;
+  outline-offset: 3px;
+}
