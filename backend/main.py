@@ -1,16 +1,21 @@
+import hmac
+import os
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import models
 import repository
+from auth import create_token, decode_token, hash_password, verify_password
 from db import Base, SessionLocal, engine, get_db
 from scoring import score_assessment, AssessmentResult
 
 app = FastAPI(title="Math Proficiency Assessment API")
+ADMIN_RESET_SECRET = os.environ.get("ADMIN_RESET_SECRET", "local-dev-admin-reset")
 
 # Total questions a child answers in one assessment attempt -- NOT the
 # size of the question pool (753 questions across 36 topics -- see
@@ -41,6 +46,13 @@ def on_startup() -> None:
     or a deploy hook, without needing to boot the API.)
     """
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "ALTER TABLE kids ADD COLUMN IF NOT EXISTS password_hash VARCHAR(300)"
+        ))
+        connection.execute(text(
+            "ALTER TABLE kids ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 0"
+        ))
     db = SessionLocal()
     try:
         inserted = repository.seed_questions_if_empty(db)
@@ -65,6 +77,18 @@ class PublicQuestion(BaseModel):
 
 class CreateKidPayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class LoginPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class AdminResetPayload(BaseModel):
+    admin_secret: str = Field(min_length=1, max_length=200)
+    student_name: str = Field(min_length=1, max_length=100)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class AttemptSummary(BaseModel):
@@ -81,6 +105,16 @@ class KidResponse(BaseModel):
     name: str
     total_attempts: int
     last_attempt: Optional[AttemptSummary] = None
+    total_points: int
+    background_id: str
+    avatar: Dict[str, str]
+    unlocked_backgrounds: List[str]
+    token: Optional[str] = None
+
+
+class CustomizationPayload(BaseModel):
+    background_id: str = Field(min_length=1, max_length=50)
+    avatar: Dict[str, str]
 
 
 class SubmitPayload(BaseModel):
@@ -95,7 +129,11 @@ class SubmitPayload(BaseModel):
 # ---------------------------------------------------------------------
 
 @app.get("/api/questions", response_model=List[PublicQuestion])
-def get_questions(kid_id: Optional[int] = None, db: Session = Depends(get_db)):
+def get_questions(
+    kid_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Returns one assessment attempt's worth of questions WITHOUT correct
     answers: a stratified sample of QUESTIONS_TOTAL_PER_ATTEMPT questions
@@ -112,6 +150,11 @@ def get_questions(kid_id: Optional[int] = None, db: Session = Depends(get_db)):
     anonymous preview fetch before a name is entered), it's a plain
     random sample with no exclusions.
     """
+    if kid_id is not None:
+        authenticated = authenticated_kid(authorization, db)
+        if authenticated.id != kid_id:
+            raise HTTPException(status_code=403, detail="You can only load your own questions.")
+
     questions = repository.get_sampled_questions(
         db, total=QUESTIONS_TOTAL_PER_ATTEMPT, kid_id=kid_id
     )
@@ -141,24 +184,147 @@ def create_or_get_kid(payload: CreateKidPayload, db: Session = Depends(get_db)):
     Returns the kid's attempt history summary so the frontend can show a
     "welcome back" message when a returning kid picks their name again.
     """
-    kid = repository.get_or_create_kid(db, payload.name)
+    existing = repository.get_kid_by_name(db, payload.name)
+    if existing:
+        if existing.password_hash is None:
+            kid = repository.set_kid_password(db, existing, hash_password(payload.password))
+        else:
+            raise HTTPException(status_code=409, detail="That student name is already registered. Log in instead.")
+    else:
+        kid = repository.get_or_create_kid(db, payload.name, hash_password(payload.password))
+    customization = repository.get_or_create_customization(db, kid.id)
     total_attempts = repository.count_kid_attempts(db, kid.id)
     last_attempt = repository.get_kid_last_attempt(db, kid.id)
 
+    response = _kid_response(
+        kid,
+        total_attempts,
+        last_attempt,
+        repository.get_kid_points(db, kid.id),
+        customization,
+    )
+    response["token"] = create_token(kid.id, kid.auth_version or 0)
+    return response
+
+
+@app.post("/api/login", response_model=KidResponse)
+def login(payload: LoginPayload, db: Session = Depends(get_db)):
+    kid = repository.get_kid_by_name(db, payload.name)
+    if not kid or not verify_password(payload.password, kid.password_hash):
+        raise HTTPException(status_code=401, detail="Incorrect student name or password.")
+    customization = repository.get_or_create_customization(db, kid.id)
+    response = _kid_response(
+        kid,
+        repository.count_kid_attempts(db, kid.id),
+        repository.get_kid_last_attempt(db, kid.id),
+        repository.get_kid_points(db, kid.id),
+        customization,
+    )
+    response["token"] = create_token(kid.id, kid.auth_version or 0)
+    return response
+
+
+@app.post("/api/admin/reset-password")
+def admin_reset_password(payload: AdminResetPayload, db: Session = Depends(get_db)):
+    if not hmac.compare_digest(payload.admin_secret, ADMIN_RESET_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid teacher reset key.")
+    kid = repository.get_kid_by_name(db, payload.student_name)
+    if not kid:
+        raise HTTPException(status_code=404, detail="Student not found.")
+    repository.set_kid_password(db, kid, hash_password(payload.new_password))
+    return {"message": f"Password reset for {kid.name}."}
+
+
+def authenticated_kid(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> models.Kid:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    try:
+        token_payload = decode_token(authorization[7:])
+        kid_id = int(token_payload["kid_id"])
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(status_code=401, detail="Invalid or expired authentication token.")
+    kid = repository.get_kid(db, kid_id)
+    if not kid:
+        raise HTTPException(status_code=401, detail="Student profile not found.")
+    if int(token_payload.get("auth_version", 0)) != (kid.auth_version or 0):
+        raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
+    return kid
+
+
+@app.get("/api/me", response_model=KidResponse)
+def get_current_kid(
+    kid: models.Kid = Depends(authenticated_kid),
+    db: Session = Depends(get_db),
+):
+    customization = repository.get_or_create_customization(db, kid.id)
+    return _kid_response(
+        kid,
+        repository.count_kid_attempts(db, kid.id),
+        repository.get_kid_last_attempt(db, kid.id),
+        repository.get_kid_points(db, kid.id),
+        customization,
+    )
+
+
+@app.patch("/api/kids/{kid_id}/customization", response_model=KidResponse)
+def update_customization(
+    kid_id: int,
+    payload: CustomizationPayload,
+    db: Session = Depends(get_db),
+    kid: models.Kid = Depends(authenticated_kid),
+):
+    if kid.id != kid_id:
+        raise HTTPException(status_code=403, detail="You can only update your own customization.")
+
+    allowed_backgrounds = {"paper", "space", "jungle", "ocean", "sunset", "blueprint", "celebration"}
+    if payload.background_id not in allowed_backgrounds:
+        raise HTTPException(status_code=400, detail="Unknown background.")
+
+    try:
+        customization = repository.save_customization(db, kid.id, payload.background_id, payload.avatar)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+    last_attempt = repository.get_kid_last_attempt(db, kid_id)
+    return _kid_response(
+        kid,
+        repository.count_kid_attempts(db, kid.id),
+        last_attempt,
+        repository.get_kid_points(db, kid.id),
+        customization,
+    )
+
+
+def _kid_response(
+    kid: models.Kid,
+    total_attempts: int,
+    last_attempt: Optional[models.AssessmentAttempt],
+    total_points: int,
+    customization: models.KidCustomization,
+) -> Dict[str, Any]:
     return {
         "id": kid.id,
         "name": kid.name,
         "total_attempts": total_attempts,
         "last_attempt": _attempt_to_summary(last_attempt) if last_attempt else None,
+        "total_points": total_points,
+        "background_id": customization.background_id,
+        "avatar": customization.avatar,
+        "unlocked_backgrounds": customization.unlocked_backgrounds,
     }
 
 
 @app.get("/api/kids/{kid_id}/history", response_model=List[AttemptSummary])
-def get_kid_history(kid_id: int, db: Session = Depends(get_db)):
-    kid = repository.get_kid(db, kid_id)
-    if not kid:
-        raise HTTPException(status_code=404, detail="Kid not found.")
-    attempts = repository.get_kid_history(db, kid_id)
+def get_kid_history(
+    kid_id: int,
+    db: Session = Depends(get_db),
+    kid: models.Kid = Depends(authenticated_kid),
+):
+    if kid.id != kid_id:
+        raise HTTPException(status_code=403, detail="You can only access your own history.")
+    attempts = repository.get_kid_history(db, kid.id)
     return [_attempt_to_summary(a) for a in attempts]
 
 
@@ -178,7 +344,11 @@ def _attempt_to_summary(attempt: models.AssessmentAttempt) -> Dict[str, Any]:
 # ---------------------------------------------------------------------
 
 @app.post("/api/submit", response_model=AssessmentResult)
-def submit_assessment(payload: SubmitPayload, db: Session = Depends(get_db)):
+def submit_assessment(
+    payload: SubmitPayload,
+    db: Session = Depends(get_db),
+    kid: models.Kid = Depends(authenticated_kid),
+):
     """
     Accepts a mapping of question id -> selected option index, grades the
     assessment, PERSISTS the attempt (and each individual answer) to
@@ -187,9 +357,8 @@ def submit_assessment(payload: SubmitPayload, db: Session = Depends(get_db)):
     if not payload.answers:
         raise HTTPException(status_code=400, detail="No answers submitted.")
 
-    kid = repository.get_kid(db, payload.kid_id)
-    if not kid:
-        raise HTTPException(status_code=404, detail="Kid not found. Create a kid profile first via POST /api/kids.")
+    if kid.id != payload.kid_id:
+        raise HTTPException(status_code=403, detail="You can only submit your own assessment.")
 
     all_questions = repository.get_all_questions(db)
     valid_ids = {q.id for q in all_questions}

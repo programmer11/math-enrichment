@@ -11,6 +11,24 @@ from sqlalchemy.orm import Session
 import models
 from seed_data import SEED_QUESTIONS
 
+ASSESSMENT_COMPLETION_POINTS = 100
+DEFAULT_BACKGROUND_ID = "paper"
+DEFAULT_AVATAR = {
+    "body": "round",
+    "color": "blue",
+    "accessory": "star",
+    "outfit": "green",
+}
+BACKGROUND_COSTS = {
+    "paper": 0,
+    "space": 200,
+    "jungle": 200,
+    "ocean": 200,
+    "sunset": 300,
+    "blueprint": 300,
+    "celebration": 500,
+}
+
 
 # ---------------------------------------------------------------------
 # Questions
@@ -153,7 +171,7 @@ def get_questions_by_ids(db: Session, ids: List[int]) -> Dict[int, models.Questi
 # Kids
 # ---------------------------------------------------------------------
 
-def get_or_create_kid(db: Session, name: str) -> models.Kid:
+def get_or_create_kid(db: Session, name: str, password_hash: str) -> models.Kid:
     normalized = name.strip()
     existing = db.execute(
         select(models.Kid).where(models.Kid.name.ilike(normalized))
@@ -161,8 +179,22 @@ def get_or_create_kid(db: Session, name: str) -> models.Kid:
     if existing:
         return existing
 
-    kid = models.Kid(name=normalized)
+    kid = models.Kid(name=normalized, password_hash=password_hash)
     db.add(kid)
+    db.commit()
+    db.refresh(kid)
+    return kid
+
+
+def get_kid_by_name(db: Session, name: str) -> Optional[models.Kid]:
+    return db.execute(
+        select(models.Kid).where(models.Kid.name.ilike(name.strip()))
+    ).scalar_one_or_none()
+
+
+def set_kid_password(db: Session, kid: models.Kid, password_hash: str) -> models.Kid:
+    kid.password_hash = password_hash
+    kid.auth_version = (kid.auth_version or 0) + 1
     db.commit()
     db.refresh(kid)
     return kid
@@ -192,6 +224,53 @@ def count_kid_attempts(db: Session, kid_id: int) -> int:
         )
     ).all()
     return len(rows)
+
+
+def get_kid_points(db: Session, kid_id: int) -> int:
+    total = db.execute(
+        select(func.coalesce(func.sum(models.RewardTransaction.points), 0)).where(
+            models.RewardTransaction.kid_id == kid_id
+        )
+    ).scalar_one()
+    return int(total)
+
+
+def get_or_create_customization(db: Session, kid_id: int) -> models.KidCustomization:
+    customization = db.get(models.KidCustomization, kid_id)
+    if customization:
+        return customization
+
+    customization = models.KidCustomization(
+        kid_id=kid_id,
+        background_id=DEFAULT_BACKGROUND_ID,
+        avatar=dict(DEFAULT_AVATAR),
+        unlocked_backgrounds=[DEFAULT_BACKGROUND_ID],
+    )
+    db.add(customization)
+    db.commit()
+    db.refresh(customization)
+    return customization
+
+
+def save_customization(
+    db: Session, kid_id: int, background_id: str, avatar: Dict[str, str]
+) -> models.KidCustomization:
+    customization = get_or_create_customization(db, kid_id)
+    unlocked = list(customization.unlocked_backgrounds or [DEFAULT_BACKGROUND_ID])
+    if background_id not in unlocked:
+        cost = BACKGROUND_COSTS[background_id]
+        if get_kid_points(db, kid_id) < cost:
+            raise ValueError("Not enough points to unlock this background.")
+        db.add(models.RewardTransaction(
+            kid_id=kid_id, source="background_unlock", points=-cost
+        ))
+        unlocked.append(background_id)
+        customization.unlocked_backgrounds = unlocked
+    customization.background_id = background_id
+    customization.avatar = avatar
+    db.commit()
+    db.refresh(customization)
+    return customization
 
 
 def get_kid_history(db: Session, kid_id: int) -> List[models.AssessmentAttempt]:
@@ -248,6 +327,14 @@ def save_attempt(
         )
 
     attempt.completed_at = func.now()
+    db.add(
+        models.RewardTransaction(
+            kid_id=kid_id,
+            attempt_id=attempt.id,
+            source="assessment_completion",
+            points=ASSESSMENT_COMPLETION_POINTS,
+        )
+    )
     db.commit()
     db.refresh(attempt)
     return attempt

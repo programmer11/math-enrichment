@@ -189,9 +189,22 @@ export interface AttemptSummary {
   total_questions: number | null;
 }
 
+export interface AvatarConfig {
+  avatar_id?: string;
+  body: string;
+  color: string;
+  accessory: string;
+  outfit: string;
+}
+
 export interface Kid {
   id: number;
   name: string;
   total_attempts: number;
   last_attempt: AttemptSummary | null;
+  total_points: number;
+  background_id: string;
+  avatar: AvatarConfig;
+  unlocked_backgrounds: string[];
+  token?: string;
 }

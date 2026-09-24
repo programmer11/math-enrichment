@@ -15,6 +15,28 @@ levels (3 questions each for 6 grades, 2 for the 7th) — so no two
 attempts, by the same kid or different kids, need to look alike. See
 "Question sampling" below.
 
+Students earn **100 reward points after completing a full assessment**,
+regardless of their academic score. Points can be used in the **My locker**
+customization area to unlock themed backgrounds and save a simple avatar.
+Academic scores and reward points are tracked separately. Games are planned
+to use the same reward ledger when added.
+
+Student profiles now use a password and signed bearer token. New students
+register with a name and password, returning students log in, and student-
+specific questions, history, assessment submission, and customization are
+protected by authentication. Set `AUTH_SECRET` to a strong private value
+outside local development; the default is only for localhost use.
+
+### Teacher/admin password reset
+
+The login screen includes a **Teacher / admin password reset** panel. Enter
+the student name, the private admin reset key, and a new password of at least
+8 characters. For local development the default reset key is
+`local-dev-admin-reset`; set `ADMIN_RESET_SECRET` to a private value before
+using the app beyond localhost. Resetting a password preserves the student's
+assessment history, points, avatar, and unlocked backgrounds, and invalidates
+their previous login sessions.
+
 > **Current deployment target: localhost only.** This app runs entirely
 > on your own machine for now — the frontend, backend, and database all
 > run locally (see "Running it locally" below). The "Choosing a free

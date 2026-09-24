@@ -51,10 +51,19 @@ class Kid(Base):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(100), nullable=False)
+    password_hash = Column(String(300), nullable=True)
+    auth_version = Column(Integer, nullable=False, default=0)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
     attempts = relationship(
         "AssessmentAttempt", back_populates="kid", order_by="AssessmentAttempt.started_at"
+    )
+    customization = relationship(
+        "KidCustomization", back_populates="kid", uselist=False,
+        cascade="all, delete-orphan"
+    )
+    reward_transactions = relationship(
+        "RewardTransaction", back_populates="kid", cascade="all, delete-orphan"
     )
 
     __table_args__ = (UniqueConstraint("name", name="uq_kids_name"),)
@@ -106,3 +115,31 @@ class AssessmentAnswer(Base):
     is_correct = Column(Boolean, nullable=False)
 
     attempt = relationship("AssessmentAttempt", back_populates="answers")
+
+
+class KidCustomization(Base):
+    __tablename__ = "kid_customizations"
+
+    kid_id = Column(Integer, ForeignKey("kids.id", ondelete="CASCADE"), primary_key=True)
+    background_id = Column(String(50), nullable=False, default="paper")
+    avatar = Column(JSONB, nullable=False, default=dict)
+    unlocked_backgrounds = Column(JSONB, nullable=False, default=list)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    kid = relationship("Kid", back_populates="customization")
+
+
+class RewardTransaction(Base):
+    __tablename__ = "reward_transactions"
+
+    id = Column(Integer, primary_key=True)
+    kid_id = Column(Integer, ForeignKey("kids.id", ondelete="CASCADE"), nullable=False)
+    attempt_id = Column(
+        Integer, ForeignKey("assessment_attempts.id", ondelete="CASCADE"),
+        nullable=True, unique=True
+    )
+    source = Column(String(50), nullable=False)
+    points = Column(Integer, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    kid = relationship("Kid", back_populates="reward_transactions")
